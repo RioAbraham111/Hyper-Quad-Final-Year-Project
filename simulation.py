@@ -22,7 +22,7 @@ Kd = 5
 theta_ref = 0.5
 
 # Simulation settings
-dt = 0.001
+dt = 0.01
 T = 5
 steps = int(T/dt)
 

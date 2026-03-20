@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -11,20 +12,56 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
-## generate training data (with noise)
-nObs = 100
+# Folder containing the 81 CSV files
+data_folder = "seesaw_simulations"
 
-xObs = torch.randn(nObs, 3)        # 3 inputs
-yObs = torch.zeros(nObs, 3)        # 3 outputs
+# List all CSV files
+csv_files = [f for f in os.listdir(data_folder) if f.endswith(".csv")]
 
-yObs[:, 0] = xObs[:, 0]**3
-yObs[:, 1] = torch.sin(xObs[:, 1])
-yObs[:, 2] = xObs[:, 2]**2
+# Feature extraction function
+def extract_features(df):
+    # Remove time column
+    theta = df["theta"].values
+    theta_dot = df["theta_dot"].values
+    tau = df["tau"].values
+
+    features = []
+
+    for signal in [theta, theta_dot, tau]:
+        mean_val = np.mean(signal)
+        std_val  = np.std(signal)
+        max_val  = np.max(signal)
+        min_val  = np.min(signal)
+        rms_val  = np.sqrt(np.mean(signal**2))
+
+        features.extend([mean_val, std_val, max_val, min_val, rms_val])
+
+    return np.array(features)
 
 
-nInput  = 3
+# Build dataset
+X_list = []
+
+for file in csv_files:
+    file_path = os.path.join(data_folder, file)
+    df = pd.read_csv(file_path)
+
+    features = extract_features(df)
+    X_list.append(features)
+
+# Convert to numpy array
+xObs = torch.tensor(np.vstack(X_list), dtype=torch.float32)
+
+print("Feature matrix shape:", xObs.shape)
+
+y_data = pd.read_csv("simulation_parameters.csv")
+y_numeric = y_data[["J", "b", "k", "tau_limit"]].astype(float)
+yObs = torch.tensor(y_numeric.values, dtype=torch.float32)
+print("Target matrix shape:", yObs.shape)
+
+nInput  = 15
 nHidden = 50
-nOutput = 3
+nOutput = 4
 
 
 class MLPexplicit(nn.Module):
@@ -38,15 +75,13 @@ class MLPexplicit(nn.Module):
         self.nOutput = nOutput
         self.linear1 = nn.Linear(self.nInput, self.nHidden)
         self.linear2 = nn.Linear(self.nHidden, self.nHidden)
-        self.linear3 = nn.Linear(self.nHidden, self.nHidden)
         self.linear4 = nn.Linear(self.nHidden, self.nOutput)
         self.ReLU    = nn.ReLU()
 
     def forward(self, x):
         h1 = self.ReLU(self.linear1(x))
         h2 = self.ReLU(self.linear2(h1))
-        h3 = self.ReLU(self.linear3(h2))
-        output = self.linear4(h3)
+        output = self.linear4(h2)
         return(output)
 
 model = MLPexplicit(nInput, nHidden, nOutput)
@@ -70,7 +105,7 @@ d = nonLinearRegressionData(xObs, yObs)
 # instantiate DataLoader
 #    we use the 4 batches of 25 observations each (full data  has 100 observations)
 #    we also shuffle the data
-train_dataloader = DataLoader(d, batch_size=25 , shuffle=True)
+train_dataloader = DataLoader(d, batch_size=20 , shuffle=True)
 
 ##################################################
 ## training the model
