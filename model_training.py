@@ -7,22 +7,23 @@ import matplotlib.pyplot as plt
 
 # this is where we have to get the data set from the simulation.py file
 data = np.load("simulation_data.npz")
-X_train = data['x_data']
-y_train = data['y_data']
+X = data['x_data']
+y = data['y_data']
 
 # Convert to PyTorch tensors
-X_train = torch.tensor(X_train, dtype=torch.float32)
-y_train = torch.tensor(y_train, dtype=torch.float32).reshape(-1, 1)
-X_test = torch.tensor(X_test, dtype=torch.float32)
-y_test = torch.tensor(y_test, dtype=torch.float32).reshape(-1, 1)
+X = torch.tensor(X, dtype=torch.float32)
+y_train = torch.tensor(y, dtype=torch.float32)
+
+X_train = X.permute(2, 0, 1).reshape(1000, 600)
+X_train = (X_train - X_train.mean(dim=0)) / (X_train.std(dim=0) + 1e-8)
 
 # Initialize the model
-input_size = 200
-hidden_size = 50
+input_size = 600
+hidden_size = 128
 output_size = 3
 model = MLP_model.MLP(input_size, hidden_size, output_size)
 
-losses = model.train(X_train, y_train, loss_function=nn.MSELoss(), optimizer=optim.Adam(model.parameters(), lr=0.01), nTrainSteps=1000)
+losses = model.fit(X_train, y_train, loss_function=nn.MSELoss(), optimizer=optim.Adam(model.parameters(), lr=0.01), nTrainSteps=1000)
 torch.save(model.state_dict(), "mlp_model.pth")
 plt.plot(losses)
 plt.xlabel("Epoch")

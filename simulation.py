@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-simulation_runs = 250
+simulation_runs = 1000
 # Performance settings
 maximum_overshoot = 0.05 # 5% overshoot target
 settling_time = 2.0  # seconds
@@ -49,11 +49,9 @@ for index in range(simulation_runs):
 
         # Dynamics
         theta_ddot = (tau - b[index] * theta_dot - k[index] * theta) / J[index]
-
         # Integrate (Euler)
         theta_dot += theta_ddot * dt
         theta += theta_dot * dt
-
         prev_error = error
 
         # Store

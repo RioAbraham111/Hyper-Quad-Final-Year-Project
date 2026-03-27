@@ -1,4 +1,6 @@
 import torch.nn as nn
+import torch
+import numpy as np
 
 class MLP(nn.Module):
     def __init__(self, nInput, nHidden, nOutput):
@@ -19,7 +21,7 @@ class MLP(nn.Module):
         output = self.linear4(h3)
         return(output)
     
-    def train(self, X, y, loss_function, optimizer, nTrainSteps):
+    def fit(self, X, y, loss_function, optimizer, nTrainSteps):
         lossses = []
         for epoch in range(nTrainSteps):
             current_loss = 0.0
@@ -35,5 +37,16 @@ class MLP(nn.Module):
                 print(f'Epoch [{epoch + 1}/{nTrainSteps}], Loss: {current_loss / len([(X, y)]):.4f}')
         
         return lossses
+    
+    def predict(self, theta_data, theta_dot_data, tau_data, X_mean, X_std):
+        sim_data = np.stack([theta_data, theta_dot_data, tau_data], axis=1)
+        X_new = torch.tensor(sim_data, dtype=torch.float32)
+        X_new = X_new.reshape(1, -1)
+        X_new = (X_new - X_mean) / X_std
+        self.eval()
+        with torch.no_grad():
+            y_pred = self.forward(X_new)
+
+        return y_pred
 
     
