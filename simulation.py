@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
+simulation_runs = 250
 # Performance settings
 maximum_overshoot = 0.05 # 5% overshoot target
 settling_time = 2.0  # seconds
@@ -9,9 +10,9 @@ wn = 4 / (zeta * settling_time)
 alpha = 5 * wn  # heuristic (faster third pole)
 
 #System parameters
-J = np.random.uniform(0.01, 0.03, 100)
-b = np.random.uniform(0.02, 0.08, 100)
-k = np.random.uniform(0.0, 0.01, 100)
+J = np.random.uniform(0.01, 0.03, simulation_runs)
+b = np.random.uniform(0.02, 0.08, simulation_runs)
+k = np.random.uniform(0.0, 0.01, simulation_runs)
 y_data = np.stack((J, b, k), axis=1)
 
 # Controller gains (PID)
@@ -23,7 +24,7 @@ Ki = J*(alpha * wn**2)
 theta_ref = 2.5
 
 x_data = []
-for index in range(100):
+for index in range(simulation_runs):
     # initial conditions
     theta = 0
     theta_dot = 0
