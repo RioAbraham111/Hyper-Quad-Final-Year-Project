@@ -1,4 +1,4 @@
-import torch as nn
+import torch.nn as nn
 
 class MLP(nn.Module):
     def __init__(self, nInput, nHidden, nOutput):
@@ -19,17 +19,21 @@ class MLP(nn.Module):
         output = self.linear4(h3)
         return(output)
     
-    def train(self, train_dataloader, loss_function, optimizer, nTrainSteps):
+    def train(self, X, y, loss_function, optimizer, nTrainSteps):
+        lossses = []
         for epoch in range(nTrainSteps):
             current_loss = 0.0
-            for xBatch, yBatch in train_dataloader:
-                optimizer.zero_grad()  # Zero the gradients
-                output = self.forward(xBatch)  # Forward pass
-                loss = loss_function(output, yBatch)  # Compute loss
-                loss.backward()  # Backward pass
-                optimizer.step()  # Update weights
-                current_loss += loss.item()  # Accumulate loss for reporting
-            if (epoch + 1) % 100 == 0:  # Print loss every 100 epochs
-                print(f'Epoch [{epoch + 1}/{nTrainSteps}], Loss: {current_loss / len(train_dataloader):.4f}')
+            for xBatch, yBatch in [(X, y)]:
+                optimizer.zero_grad() 
+                output = self.forward(xBatch) 
+                loss = loss_function(output, yBatch)
+                lossses.append(loss.item())
+                loss.backward()
+                optimizer.step()
+                current_loss += loss.item()
+            if (epoch + 1) % 100 == 0: 
+                print(f'Epoch [{epoch + 1}/{nTrainSteps}], Loss: {current_loss / len([(X, y)]):.4f}')
+        
+        return lossses
 
     
