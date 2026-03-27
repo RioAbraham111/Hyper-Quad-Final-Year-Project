@@ -1,115 +1,67 @@
 import numpy as np
-import csv
-import itertools
-import os
+import matplotlib.pyplot as plt
 
-folder_name = "seesaw_simulations"
-os.makedirs(folder_name, exist_ok=True)
+# Performance settings
+maximum_overshoot = 0.05 # 5% overshoot target
+settling_time = 2.0  # seconds
+zeta = -np.log(maximum_overshoot) / np.sqrt(np.pi**2 + (np.log(maximum_overshoot))**2)
+wn = 4 / (zeta * settling_time)
+alpha = 5 * wn  # heuristic (faster third pole)
 
-# -----------------------------
-# Parameter Sets (Logical Values)
-# -----------------------------
-J_values = [0.01, 0.05, 0.1]
-b_values = [0.05, 0.2, 0.5]
-k_values = [0.5, 1.0, 2.0]
-tau_limits = [2, 5, 10]
+#System parameters
+J = np.random.uniform(0.01, 0.03, 100)
+b = np.random.uniform(0.02, 0.08, 100)
+k = np.random.uniform(0.0, 0.01, 100)
+y_data = np.stack((J, b, k), axis=1)
 
-# PID Gains (fixed for comparison)
-Kp = 30
-Ki = 10
-Kd = 5
+# Controller gains (PID)
+Kp = J*(wn**2 + 2*zeta*wn*alpha) - k
+Kd = J*(2*zeta*wn + alpha) - b
+Ki = J*(alpha * wn**2)
 
-theta_ref = 0.5
+#desired setpoint
+theta_ref = 2.5
 
-# Simulation settings
-dt = 0.01
-T = 5
-steps = int(T/dt)
+x_data = []
+for index in range(100):
+    # initial conditions
+    theta = 0
+    theta_dot = 0
+    prev_error = 0
+    integral = 0
 
-param_file = os.path.join(folder_name, "simulation_parameters.csv")
+    theta_data = []
+    theta_dot_data = []
+    tau_data = []
 
-with open(param_file, "w", newline="") as pfile:
-    param_writer = csv.writer(pfile)
-    param_writer.writerow([
-        "simulation_file",
-        "J",
-        "b",
-        "k",
-        "tau_limit"
-    ])
+    # Simulation settings
+    dt = 0.01
+    T = 2
+    steps = int(T/dt)
 
-    sim_number = 1
+    for i in range(steps):
+        # PID error
+        error = theta_ref - theta
+        integral += error * dt
+        derivative = (error - prev_error) / dt
+        tau = Kp[index] * error + Ki[index] * integral + Kd[index] * derivative
 
-    # Loop through all parameter combinations
-    for J, b, k, tau_max in itertools.product(
-        J_values, b_values, k_values, tau_limits
-    ):
+        # Dynamics
+        theta_ddot = (tau - b[index] * theta_dot - k[index] * theta) / J[index]
 
-        # Initial conditions
-        theta = 0
-        theta_dot = 0
-        integral = 0
-        prev_error = 0
+        # Integrate (Euler)
+        theta_dot += theta_ddot * dt
+        theta += theta_dot * dt
 
-        # Storage
-        time_data = []
-        theta_data = []
-        theta_dot_data = []
-        tau_data = []
+        prev_error = error
 
-        for i in range(steps):
-            t = i * dt
+        # Store
+        theta_data.append(theta)
+        theta_dot_data.append(theta_dot)
+        tau_data.append(tau)
 
-            # PID error
-            error = theta_ref - theta
-            integral += error * dt
-            derivative = (error - prev_error) / dt
+    sim_data = np.stack((theta_data, theta_dot_data, tau_data), axis=1)
+    x_data.append(sim_data)
 
-            tau = Kp * error + Ki * integral + Kd * derivative
-
-            # Apply torque saturation
-            tau = max(min(tau, tau_max), -tau_max)
-
-            # Dynamics
-            theta_ddot = (tau - b * theta_dot - k * theta) / J
-
-            # Integrate (Euler)
-            theta_dot += theta_ddot * dt
-            theta += theta_dot * dt
-
-            prev_error = error
-
-            # Store
-            time_data.append(t)
-            theta_data.append(theta)
-            theta_dot_data.append(theta_dot)
-            tau_data.append(tau)
-
-        # Save simulation CSV
-        sim_filename = f"sim_{sim_number}.csv"
-        sim_path = os.path.join(folder_name, sim_filename)
-
-        with open(sim_path, "w", newline="") as file:
-            writer = csv.writer(file)
-            writer.writerow(["time", "theta", "theta_dot", "tau"])
-            for i in range(len(time_data)):
-                writer.writerow([
-                    time_data[i],
-                    theta_data[i],
-                    theta_dot_data[i],
-                    tau_data[i]
-                ])
-
-        # Save parameter mapping
-        param_writer.writerow([
-            sim_filename,
-            J,
-            b,
-            k,
-            tau_max
-        ])
-
-        print(f"Saved {sim_filename}")
-        sim_number += 1
-
-print("All simulations complete.")
+x_data = np.stack(x_data, axis=2) # shape: (time_steps, features, samples)
+np.savez("simulation_data.npz", x_data=x_data, y_data=y_data)
