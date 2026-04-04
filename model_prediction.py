@@ -22,7 +22,7 @@ X_std = X_full.std(dim=0) + 1e-8
 ypred = []
 yactual = []
 # test few samples
-for index in range(4, 10):
+for index in range(23, 30):
 
     theta = X[:, 0, index]
     theta_dot = X[:, 1, index]
@@ -41,8 +41,8 @@ plt.figure(figsize=(12, 6))
 labels = ['J', 'b', 'k']
 for i in range(3):
     plt.subplot(3, 1, i+1)
-    plt.scatter(range(4, 10), yactual[:, i], color='blue', label='Actual')
-    plt.scatter(range(4, 10), ypred[:, i], color='red', label='Predicted')
+    plt.scatter(range(23, 30), yactual[:, i], color='blue', label='Actual')
+    plt.scatter(range(23, 30), ypred[:, i], color='red', label='Predicted')
     plt.title(labels[i] + ': Predicted vs Actual')
     plt.legend()
     plt.grid()

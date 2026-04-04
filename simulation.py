@@ -16,9 +16,12 @@ k = np.random.uniform(0.0, 0.01, simulation_runs)
 y_data = np.stack((J, b, k), axis=1)
 
 # Controller gains (PID)
-Kp = J*(wn**2 + 2*zeta*wn*alpha) - k
-Kd = J*(2*zeta*wn + alpha) - b
-Ki = J*(alpha * wn**2)
+# Kp = J*(wn**2 + 2*zeta*wn*alpha) - k
+# Kd = J*(2*zeta*wn + alpha) - b
+# Ki = J*(alpha * wn**2)
+Kp = np.array([1.5] * simulation_runs)
+Ki = np.array([1.7] * simulation_runs)
+Kd = np.array([0.3] * simulation_runs)
 
 #desired setpoint
 theta_ref = 2.5
