@@ -1,0 +1,501 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+
+import serial
+import serial.tools.list_ports as serial_ports
+import csv
+from datetime import datetime
+from collections import deque
+
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+
+class PIDMonitorGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("1-DOF Drone Seesaw PID Monitor")
+        self.root.geometry("1100x700")
+
+        # Serial
+        self.ser = None
+        self.connected = False
+
+        # Data storage
+        self.max_display_points = 1000
+        self.time_data = deque(maxlen=self.max_display_points)
+        self.theta_data = deque(maxlen=self.max_display_points)
+        self.control_data = deque(maxlen=self.max_display_points)
+
+        self.all_rows = []
+
+        self.trial_active = False
+        self.current_trial_id = 0
+
+        # GUI variables
+        self.port_var = tk.StringVar()
+        self.baud_var = tk.StringVar(value="115200")
+
+        self.kp_var = tk.StringVar(value="0.0")
+        self.ki_var = tk.StringVar(value="0.0")
+        self.kd_var = tk.StringVar(value="0.0")
+
+        self.status_var = tk.StringVar(value="Disconnected")
+        self.latest_theta_var = tk.StringVar(value="Theta: ---")
+        self.latest_control_var = tk.StringVar(value="Control: ---")
+        self.latest_pid_var = tk.StringVar(value="Kp: ---   Ki: ---   Kd: ---")
+
+        self.create_widgets()
+        self.refresh_ports()
+
+        # Start non-threaded update loop
+        self.root.after(50, self.update_loop)
+
+    # ======================================================
+    # GUI layout
+    # ======================================================
+    def create_widgets(self):
+        main_frame = ttk.Frame(self.root, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        control_frame = ttk.LabelFrame(main_frame, text="Controls", padding=10)
+        control_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+
+        plot_frame = ttk.Frame(main_frame)
+        plot_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+
+        # ---------------- Serial section ----------------
+        ttk.Label(control_frame, text="Serial Port").pack(anchor="w")
+
+        port_row = ttk.Frame(control_frame)
+        port_row.pack(fill=tk.X, pady=5)
+
+        self.port_box = ttk.Combobox(
+            port_row,
+            textvariable=self.port_var,
+            width=22,
+            state="readonly"
+        )
+        self.port_box.pack(side=tk.LEFT)
+
+        ttk.Button(
+            port_row,
+            text="Refresh",
+            command=self.refresh_ports
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Label(control_frame, text="Baud Rate").pack(anchor="w", pady=(10, 0))
+        ttk.Entry(control_frame, textvariable=self.baud_var, width=15).pack(anchor="w", pady=5)
+
+        ttk.Button(
+            control_frame,
+            text="Connect",
+            command=self.connect_serial
+        ).pack(fill=tk.X, pady=5)
+
+        ttk.Button(
+            control_frame,
+            text="Disconnect",
+            command=self.disconnect_serial
+        ).pack(fill=tk.X, pady=5)
+
+        ttk.Separator(control_frame).pack(fill=tk.X, pady=10)
+
+        # ---------------- PID section ----------------
+        ttk.Label(control_frame, text="PID Gains").pack(anchor="w")
+
+        pid_grid = ttk.Frame(control_frame)
+        pid_grid.pack(fill=tk.X, pady=5)
+
+        ttk.Label(pid_grid, text="Kp").grid(row=0, column=0, sticky="w")
+        ttk.Entry(pid_grid, textvariable=self.kp_var, width=10).grid(row=0, column=1, padx=5, pady=3)
+
+        ttk.Label(pid_grid, text="Ki").grid(row=1, column=0, sticky="w")
+        ttk.Entry(pid_grid, textvariable=self.ki_var, width=10).grid(row=1, column=1, padx=5, pady=3)
+
+        ttk.Label(pid_grid, text="Kd").grid(row=2, column=0, sticky="w")
+        ttk.Entry(pid_grid, textvariable=self.kd_var, width=10).grid(row=2, column=1, padx=5, pady=3)
+
+        ttk.Button(
+            control_frame,
+            text="Update PID",
+            command=self.update_pid
+        ).pack(fill=tk.X, pady=5)
+
+        ttk.Separator(control_frame).pack(fill=tk.X, pady=10)
+
+        # ---------------- Trial buttons ----------------
+        ttk.Button(
+            control_frame,
+            text="START Trial",
+            command=self.start_trial
+        ).pack(fill=tk.X, pady=5)
+
+        ttk.Button(
+            control_frame,
+            text="STOP Trial",
+            command=self.stop_trial
+        ).pack(fill=tk.X, pady=5)
+
+        ttk.Button(
+            control_frame,
+            text="Arduino Status",
+            command=self.request_status
+        ).pack(fill=tk.X, pady=5)
+
+        ttk.Separator(control_frame).pack(fill=tk.X, pady=10)
+
+        # ---------------- Data buttons ----------------
+        ttk.Button(
+            control_frame,
+            text="Save CSV",
+            command=self.save_csv
+        ).pack(fill=tk.X, pady=5)
+
+        ttk.Button(
+            control_frame,
+            text="Clear Plot",
+            command=self.clear_plot
+        ).pack(fill=tk.X, pady=5)
+
+        ttk.Separator(control_frame).pack(fill=tk.X, pady=10)
+
+        # ---------------- Status labels ----------------
+        ttk.Label(control_frame, textvariable=self.status_var).pack(anchor="w", pady=3)
+        ttk.Label(control_frame, textvariable=self.latest_theta_var).pack(anchor="w", pady=3)
+        ttk.Label(control_frame, textvariable=self.latest_control_var).pack(anchor="w", pady=3)
+        ttk.Label(control_frame, textvariable=self.latest_pid_var).pack(anchor="w", pady=3)
+
+        # ---------------- Serial monitor ----------------
+        ttk.Label(control_frame, text="Serial Messages").pack(anchor="w", pady=(10, 0))
+
+        self.serial_text = tk.Text(control_frame, height=12, width=40)
+        self.serial_text.pack(fill=tk.BOTH, expand=True)
+
+        # ---------------- Matplotlib plot ----------------
+        self.fig, self.ax = plt.subplots(figsize=(7, 5))
+        self.line_theta, = self.ax.plot([], [], label="Theta")
+        self.line_control, = self.ax.plot([], [], label="Control Output", alpha=0.5)
+
+        self.ax.set_xlabel("Time [s]")
+        self.ax.set_ylabel("Value")
+        self.ax.set_title("Live 1-DOF Seesaw Monitoring")
+        self.ax.grid(True)
+        self.ax.legend()
+
+        self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    # ======================================================
+    # Serial connection
+    # ======================================================
+    def refresh_ports(self):
+        ports = serial.tools.list_ports.comports()
+        port_names = [port.device for port in ports]
+
+        self.port_box["values"] = port_names
+
+        if port_names:
+            self.port_var.set(port_names[0])
+        else:
+            self.port_var.set("")
+
+    def connect_serial(self):
+        if self.connected:
+            messagebox.showinfo("Already connected", "Serial is already connected.")
+            return
+
+        port = self.port_var.get()
+
+        if not port:
+            messagebox.showerror("No port selected", "Please select a serial port.")
+            return
+
+        try:
+            baud = int(self.baud_var.get())
+
+            self.ser = serial.Serial(
+                port=port,
+                baudrate=baud,
+                timeout=0
+            )
+
+            self.connected = True
+            self.status_var.set(f"Connected to {port} at {baud} baud")
+            self.log_message(f"Connected to {port}")
+
+        except Exception as e:
+            messagebox.showerror("Connection error", str(e))
+            self.status_var.set("Connection failed")
+
+    def disconnect_serial(self):
+        if self.ser is not None:
+            try:
+                if self.connected:
+                    self.send_command("STOP")
+
+                self.ser.close()
+            except Exception:
+                pass
+
+        self.ser = None
+        self.connected = False
+        self.trial_active = False
+
+        self.status_var.set("Disconnected")
+        self.log_message("Disconnected")
+
+    # ======================================================
+    # Arduino commands
+    # ======================================================
+    def send_command(self, command):
+        if not self.connected or self.ser is None:
+            self.log_message("ERROR: Not connected to Arduino")
+            return
+
+        try:
+            self.ser.write((command + "\n").encode("utf-8"))
+            self.log_message(f"Python -> Arduino: {command}")
+        except Exception as e:
+            self.log_message(f"Serial write error: {e}")
+
+    def update_pid(self):
+        try:
+            kp = float(self.kp_var.get())
+            ki = float(self.ki_var.get())
+            kd = float(self.kd_var.get())
+        except ValueError:
+            messagebox.showerror("Invalid PID", "Kp, Ki, and Kd must be numbers.")
+            return
+
+        self.send_command(f"SET {kp} {ki} {kd}")
+
+    def start_trial(self):
+        self.current_trial_id += 1
+        self.send_command("START")
+
+    def stop_trial(self):
+        self.send_command("STOP")
+
+    def request_status(self):
+        self.send_command("STATUS")
+
+    # ======================================================
+    # Main non-threaded update loop
+    # ======================================================
+    def update_loop(self):
+        self.read_serial_data()
+        self.update_plot()
+
+        # Run this loop again after 50 ms
+        self.root.after(50, self.update_loop)
+
+    # ======================================================
+    # Read serial data without threading
+    # ======================================================
+    def read_serial_data(self):
+        if not self.connected or self.ser is None:
+            return
+
+        try:
+            # Read all available lines in the serial buffer
+            while self.ser.in_waiting > 0:
+                line = self.ser.readline().decode("utf-8", errors="ignore").strip()
+
+                if line:
+                    self.process_serial_line(line)
+
+        except Exception as e:
+            self.log_message(f"Serial read error: {e}")
+
+    # ======================================================
+    # Process incoming Arduino line
+    # ======================================================
+    def process_serial_line(self, line):
+        # Arduino text messages
+        if line.startswith("READY"):
+            self.log_message(line)
+            return
+
+        if line.startswith("Commands"):
+            self.log_message(line)
+            return
+
+        if line.startswith("TRIAL_STARTED"):
+            self.trial_active = True
+            self.status_var.set("Trial running")
+            self.log_message("Trial started")
+            return
+
+        if line.startswith("TRIAL_STOPPED"):
+            self.trial_active = False
+            self.status_var.set("Trial stopped")
+            self.log_message("Trial stopped")
+            return
+
+        if line.startswith("PID_UPDATED"):
+            parts = line.split(",")
+
+            if len(parts) == 4:
+                kp = parts[1]
+                ki = parts[2]
+                kd = parts[3]
+
+                self.latest_pid_var.set(f"Kp: {kp}   Ki: {ki}   Kd: {kd}")
+                self.log_message(f"PID updated: Kp={kp}, Ki={ki}, Kd={kd}")
+            else:
+                self.log_message(line)
+
+            return
+
+        if line.startswith("STATUS"):
+            self.log_message(line)
+            return
+
+        if line.startswith("ERROR"):
+            self.log_message(line)
+            return
+
+        if line.startswith("time_ms"):
+            return
+
+        # Expected data:
+        # time_ms,theta,control_output,kp,ki,kd
+        parts = line.split(",")
+
+        if len(parts) != 6:
+            self.log_message(f"Ignored: {line}")
+            return
+
+        try:
+            t_ms = float(parts[0])
+            theta = float(parts[1])
+            control_output = float(parts[2])
+            kp = float(parts[3])
+            ki = float(parts[4])
+            kd = float(parts[5])
+
+            t_sec = t_ms / 1000.0
+
+            self.time_data.append(t_sec)
+            self.theta_data.append(theta)
+            self.control_data.append(control_output)
+
+            self.all_rows.append([
+                self.current_trial_id,
+                t_ms,
+                theta,
+                control_output,
+                kp,
+                ki,
+                kd
+            ])
+
+            self.latest_theta_var.set(f"Theta: {theta:.4f}")
+            self.latest_control_var.set(f"Control: {control_output:.4f}")
+            self.latest_pid_var.set(f"Kp: {kp:.4f}   Ki: {ki:.4f}   Kd: {kd:.4f}")
+
+        except ValueError:
+            self.log_message(f"Could not parse: {line}")
+
+    # ======================================================
+    # Plot update
+    # ======================================================
+    def update_plot(self):
+        if len(self.time_data) == 0:
+            return
+
+        self.line_theta.set_data(list(self.time_data), list(self.theta_data))
+        self.line_control.set_data(list(self.time_data), list(self.control_data))
+
+        self.ax.relim()
+        self.ax.autoscale_view()
+
+        self.canvas.draw_idle()
+
+    # ======================================================
+    # Save CSV
+    # ======================================================
+    def save_csv(self):
+        if len(self.all_rows) == 0:
+            messagebox.showinfo("No data", "No data to save yet.")
+            return
+
+        default_filename = f"pid_trial_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            initialfile=default_filename,
+            filetypes=[("CSV files", "*.csv")]
+        )
+
+        if not filename:
+            return
+
+        try:
+            with open(filename, mode="w", newline="") as file:
+                writer = csv.writer(file)
+                writer.writerow([
+                    "trial_id",
+                    "time_ms",
+                    "theta",
+                    "control_output",
+                    "kp",
+                    "ki",
+                    "kd"
+                ])
+                writer.writerows(self.all_rows)
+
+            self.log_message(f"Saved CSV: {filename}")
+            messagebox.showinfo("Saved", f"Data saved to:\n{filename}")
+
+        except Exception as e:
+            messagebox.showerror("Save error", str(e))
+
+    # ======================================================
+    # Clear plot
+    # ======================================================
+    def clear_plot(self):
+        self.time_data.clear()
+        self.theta_data.clear()
+        self.control_data.clear()
+
+        self.all_rows.clear()
+
+        self.line_theta.set_data([], [])
+        self.line_control.set_data([], [])
+
+        self.ax.relim()
+        self.ax.autoscale_view()
+        self.canvas.draw_idle()
+
+        self.log_message("Plot and data cleared")
+
+    # ======================================================
+    # Serial message log
+    # ======================================================
+    def log_message(self, message):
+        self.serial_text.insert(tk.END, message + "\n")
+        self.serial_text.see(tk.END)
+
+    # ======================================================
+    # Window close
+    # ======================================================
+    def on_close(self):
+        try:
+            if self.connected:
+                self.send_command("STOP")
+            self.disconnect_serial()
+        except Exception:
+            pass
+
+        self.root.destroy()
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = PIDMonitorGUI(root)
+
+    root.protocol("WM_DELETE_WINDOW", app.on_close)
+
+    root.mainloop()
