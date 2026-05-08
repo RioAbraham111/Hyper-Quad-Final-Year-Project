@@ -6,7 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # this is where we have to get the data set from the simulation.py file
-data = np.load("simulation_data.npz")
+data = np.load("successful_model/attempt#1/simulation_data.npz")
 X = data['x_data']
 y = data['y_data']
 
@@ -29,5 +29,6 @@ plt.plot(losses)
 plt.xlabel("Epoch")
 plt.ylabel("Loss")
 plt.title("Training Loss over Epochs")
+plt.grid()
 plt.show()
 

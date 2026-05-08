@@ -5,11 +5,11 @@ import matplotlib.pyplot as plt
 
 # load model
 model = MLP_model.MLP(600, 128, 3)
-model.load_state_dict(torch.load("mlp_model.pth"))
+model.load_state_dict(torch.load("successful_model/attempt#1/mlp_model.pth"))
 model.eval()
 
 # load data
-data = np.load("simulation_data.npz")
+data = np.load("successful_model/attempt#1/simulation_data.npz")
 X = data['x_data']   # (200,3,250)
 y = data['y_data']   # (250,3)
 

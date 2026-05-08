@@ -33,7 +33,7 @@ class MLP(nn.Module):
                 loss.backward()
                 optimizer.step()
                 current_loss += loss.item()
-            if (epoch + 1) % 100 == 0: 
+            if (epoch + 1) % 10 == 0: 
                 print(f'Epoch [{epoch + 1}/{nTrainSteps}], Loss: {current_loss / len([(X, y)]):.4f}')
         
         return lossses
