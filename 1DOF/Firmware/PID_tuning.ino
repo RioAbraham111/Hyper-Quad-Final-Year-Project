@@ -20,7 +20,7 @@ const int ESC_MAX_US = 2000;
 
 // Base motor power
 // Both motors will run at this power when PID output is zero
-int basePower = 40;
+int basePower = 15;
 
 // Limit how much the PID can change motor power
 int maxDeltaPower = 30;

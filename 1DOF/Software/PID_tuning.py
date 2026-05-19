@@ -26,6 +26,7 @@ class PIDMonitorGUI:
         self.time_data = deque(maxlen=self.max_display_points)
         self.theta_data = deque(maxlen=self.max_display_points)
         self.control_data = deque(maxlen=self.max_display_points)
+        self.theta_dot_data = deque(maxlen=self.max_display_points)
 
         self.all_rows = []
 
@@ -44,16 +45,14 @@ class PIDMonitorGUI:
         self.latest_theta_var = tk.StringVar(value="Theta: ---")
         self.latest_control_var = tk.StringVar(value="Control: ---")
         self.latest_pid_var = tk.StringVar(value="Kp: ---   Ki: ---   Kd: ---")
+        self.latest_theta_dot_var = tk.StringVar(value="Theta dot: ---")
 
         self.create_widgets()
         self.refresh_ports()
 
         # Start non-threaded update loop
-        self.root.after(50, self.update_loop)
+        self.root.after(10, self.update_loop)
 
-    # ======================================================
-    # GUI layout
-    # ======================================================
     def create_widgets(self):
         main_frame = ttk.Frame(self.root, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
@@ -139,6 +138,12 @@ class PIDMonitorGUI:
 
         ttk.Button(
             control_frame,
+            text="IDLE",
+            command=self.idle_motor
+        ).pack(fill=tk.X, pady=5)
+
+        ttk.Button(
+            control_frame,
             text="Arduino Status",
             command=self.request_status
         ).pack(fill=tk.X, pady=5)
@@ -163,8 +168,10 @@ class PIDMonitorGUI:
         # ---------------- Status labels ----------------
         ttk.Label(control_frame, textvariable=self.status_var).pack(anchor="w", pady=3)
         ttk.Label(control_frame, textvariable=self.latest_theta_var).pack(anchor="w", pady=3)
+        ttk.Label(control_frame, textvariable=self.latest_theta_dot_var).pack(anchor="w", pady=3)
         ttk.Label(control_frame, textvariable=self.latest_control_var).pack(anchor="w", pady=3)
         ttk.Label(control_frame, textvariable=self.latest_pid_var).pack(anchor="w", pady=3)
+
 
         # ---------------- Serial monitor ----------------
         ttk.Label(control_frame, text="Serial Messages").pack(anchor="w", pady=(10, 0))
@@ -173,22 +180,50 @@ class PIDMonitorGUI:
         self.serial_text.pack(fill=tk.BOTH, expand=True)
 
         # ---------------- Matplotlib plot ----------------
-        self.fig, self.ax = plt.subplots(figsize=(7, 5))
-        self.line_theta, = self.ax.plot([], [], label="Theta")
-        self.line_control, = self.ax.plot([], [], label="Control Output", alpha=0.5)
+# ---------------- Matplotlib plot ----------------
+        self.fig, (self.ax_control, self.ax_theta, self.ax_theta_dot) = plt.subplots(
+            3, 1,
+            figsize=(7, 7),
+            sharex=True
+        )
 
-        self.ax.set_xlabel("Time [s]")
-        self.ax.set_ylabel("Value")
-        self.ax.set_title("Live 1-DOF Seesaw Monitoring")
-        self.ax.grid(True)
-        self.ax.legend()
+        TITLE_FONT = 6
+        LABEL_FONT = 5
+        TICK_FONT = 5
+        LEGEND_FONT = 5
+
+        # Plot 1: controller output
+        self.line_control, = self.ax_control.plot([], [], label="Control Output")
+        self.ax_control.set_ylabel("Control", fontsize=LABEL_FONT)
+        self.ax_control.set_title("Controller Output", fontsize=TITLE_FONT)
+        self.ax_control.grid(True)
+        self.ax_control.legend(loc="upper right", fontsize=LEGEND_FONT)
+        self.ax_control.tick_params(axis="both", labelsize=TICK_FONT)
+
+        # Plot 2: theta
+        self.line_theta, = self.ax_theta.plot([], [], label="Theta")
+        self.ax_theta.set_ylim(-55, 55)
+        self.ax_theta.set_ylabel("Theta [deg]", fontsize=LABEL_FONT)
+        self.ax_theta.set_title("Theta", fontsize=TITLE_FONT)
+        self.ax_theta.grid(True)
+        self.ax_theta.legend(loc="upper right", fontsize=LEGEND_FONT)
+        self.ax_theta.tick_params(axis="both", labelsize=TICK_FONT)
+
+        # Plot 3: theta dot
+        self.line_theta_dot, = self.ax_theta_dot.plot([], [], label="Theta Dot")
+        self.ax_theta_dot.set_xlabel("Time [s]", fontsize=LABEL_FONT)
+        self.ax_theta_dot.set_ylabel("Theta Dot [deg/s]", fontsize=LABEL_FONT)
+        self.ax_theta_dot.set_title("Theta Dot", fontsize=TITLE_FONT)
+        self.ax_theta_dot.grid(True)
+        self.ax_theta_dot.legend(loc="upper right", fontsize=LEGEND_FONT)
+        self.ax_theta_dot.tick_params(axis="both", labelsize=TICK_FONT)
+
+        self.fig.tight_layout()
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-    # ======================================================
-    # Serial connection
-    # ======================================================
+
     def refresh_ports(self):
         ports = serial.tools.list_ports.comports()
         port_names = [port.device for port in ports]
@@ -245,9 +280,7 @@ class PIDMonitorGUI:
         self.status_var.set("Disconnected")
         self.log_message("Disconnected")
 
-    # ======================================================
-    # Arduino commands
-    # ======================================================
+
     def send_command(self, command):
         if not self.connected or self.ser is None:
             self.log_message("ERROR: Not connected to Arduino")
@@ -280,15 +313,16 @@ class PIDMonitorGUI:
     def request_status(self):
         self.send_command("STATUS")
 
-    # ======================================================
-    # Main non-threaded update loop
-    # ======================================================
+    def idle_motor(self):
+        self.send_command("IDLE")
+
+
     def update_loop(self):
         self.read_serial_data()
         self.update_plot()
 
         # Run this loop again after 50 ms
-        self.root.after(50, self.update_loop)
+        self.root.after(10, self.update_loop)
 
     # ======================================================
     # Read serial data without threading
@@ -377,14 +411,27 @@ class PIDMonitorGUI:
 
             t_sec = t_ms / 1000.0
 
+            if len(self.time_data) > 0 and t_sec <= self.time_data[-1]:
+                return
+
+            if len(self.time_data) > 0:
+                prev_t = self.time_data[-1]
+                prev_theta = self.theta_data[-1]
+                dt = t_sec - prev_t
+                theta_dot = (theta - prev_theta) / dt
+            else:
+                theta_dot = 0.0
+
             self.time_data.append(t_sec)
             self.theta_data.append(theta)
             self.control_data.append(control_output)
+            self.theta_dot_data.append(theta_dot)
 
             self.all_rows.append([
                 self.current_trial_id,
                 t_ms,
                 theta,
+                theta_dot,
                 control_output,
                 kp,
                 ki,
@@ -392,6 +439,7 @@ class PIDMonitorGUI:
             ])
 
             self.latest_theta_var.set(f"Theta: {theta:.4f}")
+            self.latest_theta_dot_var.set(f"Theta dot: {theta_dot:.4f}")
             self.latest_control_var.set(f"Control: {control_output:.4f}")
             self.latest_pid_var.set(f"Kp: {kp:.4f}   Ki: {ki:.4f}   Kd: {kd:.4f}")
 
@@ -405,11 +453,29 @@ class PIDMonitorGUI:
         if len(self.time_data) == 0:
             return
 
-        self.line_theta.set_data(list(self.time_data), list(self.theta_data))
-        self.line_control.set_data(list(self.time_data), list(self.control_data))
+        t = list(self.time_data)
 
-        self.ax.relim()
-        self.ax.autoscale_view()
+        self.line_control.set_data(t, list(self.control_data))
+        self.line_theta.set_data(t, list(self.theta_data))
+        self.line_theta_dot.set_data(t, list(self.theta_dot_data))
+
+        self.ax_control.relim()
+        self.ax_control.autoscale_view()
+
+        self.ax_theta.relim()
+        self.ax_theta.set_ylim(-55, 55)
+
+        self.ax_theta_dot.relim()
+        self.ax_theta_dot.autoscale_view()
+
+        # Show only latest 10 seconds
+        latest_time = t[-1]
+        window = 10.0
+
+        if latest_time > window:
+            self.ax_theta_dot.set_xlim(latest_time - window, latest_time)
+        else:
+            self.ax_theta_dot.set_xlim(0, window)
 
         self.canvas.draw_idle()
 
@@ -439,6 +505,7 @@ class PIDMonitorGUI:
                     "trial_id",
                     "time_ms",
                     "theta",
+                    "theta_dot",
                     "control_output",
                     "kp",
                     "ki",
@@ -459,14 +526,23 @@ class PIDMonitorGUI:
         self.time_data.clear()
         self.theta_data.clear()
         self.control_data.clear()
+        self.theta_dot_data.clear()
 
         self.all_rows.clear()
 
-        self.line_theta.set_data([], [])
         self.line_control.set_data([], [])
+        self.line_theta.set_data([], [])
+        self.line_theta_dot.set_data([], [])
 
-        self.ax.relim()
-        self.ax.autoscale_view()
+        self.ax_control.relim()
+        self.ax_control.autoscale_view()
+
+        self.ax_theta.relim()
+        self.ax_theta.autoscale_view()
+
+        self.ax_theta_dot.relim()
+        self.ax_theta_dot.autoscale_view()
+
         self.canvas.draw_idle()
 
         self.log_message("Plot and data cleared")
