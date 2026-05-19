@@ -144,6 +144,12 @@ class PIDMonitorGUI:
 
         ttk.Button(
             control_frame,
+            text="ZERO / HOME Encoder",
+            command=self.zero_encoder
+        ).pack(fill=tk.X, pady=5)
+
+        ttk.Button(
+            control_frame,
             text="Arduino Status",
             command=self.request_status
         ).pack(fill=tk.X, pady=5)
@@ -180,7 +186,6 @@ class PIDMonitorGUI:
         self.serial_text.pack(fill=tk.BOTH, expand=True)
 
         # ---------------- Matplotlib plot ----------------
-# ---------------- Matplotlib plot ----------------
         self.fig, (self.ax_control, self.ax_theta, self.ax_theta_dot) = plt.subplots(
             3, 1,
             figsize=(7, 7),
@@ -316,6 +321,8 @@ class PIDMonitorGUI:
     def idle_motor(self):
         self.send_command("IDLE")
 
+    def zero_encoder(self):
+        self.send_command("ZERO")
 
     def update_loop(self):
         self.read_serial_data()
@@ -389,38 +396,38 @@ class PIDMonitorGUI:
         if line.startswith("ERROR"):
             self.log_message(line)
             return
+        
+        if line.startswith("ENCODER_ZEROED"):
+            self.status_var.set("Encoder zeroed")
+            self.log_message("Encoder zeroed / homed")
+            return
 
         if line.startswith("time_ms"):
             return
 
-        # Expected data:
-        # time_ms,theta,control_output,kp,ki,kd
+        # Expected data from Arduino:
+        # time_ms,theta,theta_dot,control_output,kp,ki,kd
         parts = line.split(",")
 
-        if len(parts) != 6:
-            self.log_message(f"Ignored: {line}")
+        if len(parts) != 7:
+            # Do not spam the GUI if the Arduino sends other text
             return
 
         try:
             t_ms = float(parts[0])
             theta = float(parts[1])
-            control_output = float(parts[2])
-            kp = float(parts[3])
-            ki = float(parts[4])
-            kd = float(parts[5])
+            theta_dot = float(parts[2])
+            control_output = float(parts[3])
+            kp = float(parts[4])
+            ki = float(parts[5])
+            kd = float(parts[6])
 
             t_sec = t_ms / 1000.0
 
+            # Only reject samples with repeated/backwards time.
+            # No theta_dot calculation is done in the GUI.
             if len(self.time_data) > 0 and t_sec <= self.time_data[-1]:
                 return
-
-            if len(self.time_data) > 0:
-                prev_t = self.time_data[-1]
-                prev_theta = self.theta_data[-1]
-                dt = t_sec - prev_t
-                theta_dot = (theta - prev_theta) / dt
-            else:
-                theta_dot = 0.0
 
             self.time_data.append(t_sec)
             self.theta_data.append(theta)
