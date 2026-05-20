@@ -22,7 +22,7 @@ class PIDMonitorGUI:
         self.connected = False
 
         # Data storage
-        self.max_display_points = 1000
+        self.max_display_points = 2000
         self.time_data = deque(maxlen=self.max_display_points)
         self.theta_data = deque(maxlen=self.max_display_points)
         self.control_data = deque(maxlen=self.max_display_points)
@@ -40,6 +40,13 @@ class PIDMonitorGUI:
         self.kp_var = tk.StringVar(value="0.0")
         self.ki_var = tk.StringVar(value="0.0")
         self.kd_var = tk.StringVar(value="0.0")
+
+        # Desired angle / reference variables
+        self.setpoint_var = tk.StringVar(value="0.0")
+
+        self.sine_offset_var = tk.StringVar(value="0.0")
+        self.sine_amplitude_var = tk.StringVar(value="10.0")
+        self.sine_frequency_var = tk.StringVar(value="0.1")
 
         self.status_var = tk.StringVar(value="Disconnected")
         self.latest_theta_var = tk.StringVar(value="Theta: ---")
@@ -101,75 +108,136 @@ class PIDMonitorGUI:
         ttk.Separator(control_frame).pack(fill=tk.X, pady=10)
 
         # ---------------- PID section ----------------
+        # ---------------- PID section ----------------
         ttk.Label(control_frame, text="PID Gains").pack(anchor="w")
 
-        pid_grid = ttk.Frame(control_frame)
-        pid_grid.pack(fill=tk.X, pady=5)
+        pid_frame = ttk.Frame(control_frame)
+        pid_frame.pack(fill=tk.X, pady=5)
 
-        ttk.Label(pid_grid, text="Kp").grid(row=0, column=0, sticky="w")
-        ttk.Entry(pid_grid, textvariable=self.kp_var, width=10).grid(row=0, column=1, padx=5, pady=3)
+        # Left side: labels + entries
+        ttk.Label(pid_frame, text="Kp").grid(row=0, column=0, sticky="w", pady=2)
+        ttk.Entry(pid_frame, textvariable=self.kp_var, width=8).grid(row=0, column=1, padx=5, pady=2)
 
-        ttk.Label(pid_grid, text="Ki").grid(row=1, column=0, sticky="w")
-        ttk.Entry(pid_grid, textvariable=self.ki_var, width=10).grid(row=1, column=1, padx=5, pady=3)
+        ttk.Label(pid_frame, text="Ki").grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Entry(pid_frame, textvariable=self.ki_var, width=8).grid(row=1, column=1, padx=5, pady=2)
 
-        ttk.Label(pid_grid, text="Kd").grid(row=2, column=0, sticky="w")
-        ttk.Entry(pid_grid, textvariable=self.kd_var, width=10).grid(row=2, column=1, padx=5, pady=3)
+        ttk.Label(pid_frame, text="Kd").grid(row=2, column=0, sticky="w", pady=2)
+        ttk.Entry(pid_frame, textvariable=self.kd_var, width=8).grid(row=2, column=1, padx=5, pady=2)
+
+        # Right side: button
+        ttk.Button(
+            pid_frame,
+            text="Update PID",
+            command=self.update_pid,
+            width=14
+        ).grid(row=0, column=2, rowspan=3, padx=8, pady=2, sticky="ns")
+
+        ttk.Separator(control_frame).pack(fill=tk.X, pady=8)
+
+        # ---------------- Constant setpoint section ----------------
+        ttk.Label(control_frame, text="Desired Angle").pack(anchor="w")
+
+        setpoint_frame = ttk.Frame(control_frame)
+        setpoint_frame.pack(fill=tk.X, pady=5)
+
+        ttk.Label(setpoint_frame, text="Angle").grid(row=0, column=0, sticky="w", pady=2)
+        ttk.Entry(setpoint_frame, textvariable=self.setpoint_var, width=8).grid(row=0, column=1, padx=5, pady=2)
 
         ttk.Button(
-            control_frame,
-            text="Update PID",
-            command=self.update_pid
-        ).pack(fill=tk.X, pady=5)
+            setpoint_frame,
+            text="Set Angle",
+            command=self.set_constant_angle,
+            width=14
+        ).grid(row=0, column=2, padx=8, pady=2)
 
-        ttk.Separator(control_frame).pack(fill=tk.X, pady=10)
+        # ---------------- Sine reference section ----------------
+        ttk.Label(control_frame, text="Sine Reference").pack(anchor="w", pady=(5, 0))
+
+        sine_frame = ttk.Frame(control_frame)
+        sine_frame.pack(fill=tk.X, pady=5)
+
+        ttk.Label(sine_frame, text="Offset").grid(row=0, column=0, sticky="w", pady=2)
+        ttk.Entry(sine_frame, textvariable=self.sine_offset_var, width=8).grid(row=0, column=1, padx=5, pady=2)
+
+        ttk.Label(sine_frame, text="Amp").grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Entry(sine_frame, textvariable=self.sine_amplitude_var, width=8).grid(row=1, column=1, padx=5, pady=2)
+
+        ttk.Label(sine_frame, text="Freq").grid(row=2, column=0, sticky="w", pady=2)
+        ttk.Entry(sine_frame, textvariable=self.sine_frequency_var, width=8).grid(row=2, column=1, padx=5, pady=2)
+
+        ttk.Button(
+            sine_frame,
+            text="Set Sine",
+            command=self.set_sine_angle,
+            width=14
+        ).grid(row=0, column=2, rowspan=3, padx=8, pady=2, sticky="ns")
+
+        ttk.Separator(control_frame).pack(fill=tk.X, pady=8)
 
         # ---------------- Trial buttons ----------------
-        ttk.Button(
-            control_frame,
-            text="START Trial",
-            command=self.start_trial
-        ).pack(fill=tk.X, pady=5)
+        trial_button_frame = ttk.Frame(control_frame)
+        trial_button_frame.pack(fill=tk.X, pady=5)
 
         ttk.Button(
-            control_frame,
-            text="STOP Trial",
-            command=self.stop_trial
-        ).pack(fill=tk.X, pady=5)
+            trial_button_frame,
+            text="START",
+            command=self.start_trial,
+            width=12
+        ).grid(row=0, column=0, padx=3, pady=3, sticky="ew")
 
         ttk.Button(
-            control_frame,
+            trial_button_frame,
+            text="STOP",
+            command=self.stop_trial,
+            width=12
+        ).grid(row=0, column=1, padx=3, pady=3, sticky="ew")
+
+        ttk.Button(
+            trial_button_frame,
             text="IDLE",
-            command=self.idle_motor
-        ).pack(fill=tk.X, pady=5)
+            command=self.idle_motor,
+            width=12
+        ).grid(row=1, column=0, padx=3, pady=3, sticky="ew")
 
         ttk.Button(
-            control_frame,
-            text="ZERO / HOME Encoder",
-            command=self.zero_encoder
-        ).pack(fill=tk.X, pady=5)
+            trial_button_frame,
+            text="ZERO",
+            command=self.zero_encoder,
+            width=12
+        ).grid(row=1, column=1, padx=3, pady=3, sticky="ew")
 
         ttk.Button(
-            control_frame,
-            text="Arduino Status",
-            command=self.request_status
-        ).pack(fill=tk.X, pady=5)
+            trial_button_frame,
+            text="STATUS",
+            command=self.request_status,
+            width=12
+        ).grid(row=2, column=0, columnspan=2, padx=3, pady=3, sticky="ew")
 
-        ttk.Separator(control_frame).pack(fill=tk.X, pady=10)
+        trial_button_frame.columnconfigure(0, weight=1)
+        trial_button_frame.columnconfigure(1, weight=1)
+
+        ttk.Separator(control_frame).pack(fill=tk.X, pady=8)
 
         # ---------------- Data buttons ----------------
+        data_button_frame = ttk.Frame(control_frame)
+        data_button_frame.pack(fill=tk.X, pady=5)
+
         ttk.Button(
-            control_frame,
+            data_button_frame,
             text="Save CSV",
-            command=self.save_csv
-        ).pack(fill=tk.X, pady=5)
+            command=self.save_csv,
+            width=12
+        ).grid(row=0, column=0, padx=3, pady=3, sticky="ew")
 
         ttk.Button(
-            control_frame,
+            data_button_frame,
             text="Clear Plot",
-            command=self.clear_plot
-        ).pack(fill=tk.X, pady=5)
+            command=self.clear_plot,
+            width=12
+        ).grid(row=0, column=1, padx=3, pady=3, sticky="ew")
 
-        ttk.Separator(control_frame).pack(fill=tk.X, pady=10)
+        data_button_frame.columnconfigure(0, weight=1)
+        data_button_frame.columnconfigure(1, weight=1)
 
         # ---------------- Status labels ----------------
         ttk.Label(control_frame, textvariable=self.status_var).pack(anchor="w", pady=3)
@@ -308,6 +376,64 @@ class PIDMonitorGUI:
 
         self.send_command(f"SET {kp} {ki} {kd}")
 
+    def set_constant_angle(self):
+        try:
+            angle = float(self.setpoint_var.get())
+        except ValueError:
+            messagebox.showerror("Invalid angle", "Desired angle must be a number.")
+            return
+
+        if angle < -45.0 or angle > 45.0:
+            messagebox.showerror(
+                "Invalid angle",
+                "Desired angle must be between -45 and 45 degrees."
+            )
+            return
+
+        self.send_command(f"ANGLE {angle}")
+
+
+    def set_sine_angle(self):
+        try:
+            offset = float(self.sine_offset_var.get())
+            amplitude = float(self.sine_amplitude_var.get())
+            frequency = float(self.sine_frequency_var.get())
+        except ValueError:
+            messagebox.showerror(
+                "Invalid sine input",
+                "Offset, amplitude, and frequency must be numbers."
+            )
+            return
+
+        if frequency <= 0:
+            messagebox.showerror(
+                "Invalid frequency",
+                "Sine frequency must be greater than 0 Hz."
+            )
+            return
+
+        if amplitude < 0:
+            messagebox.showerror(
+                "Invalid amplitude",
+                "Sine amplitude must be positive."
+            )
+            return
+
+        min_angle = offset - amplitude
+        max_angle = offset + amplitude
+
+        if min_angle < -45.0 or max_angle > 45.0:
+            messagebox.showerror(
+                "Invalid sine range",
+                f"Sine reference exceeds safe range.\n\n"
+                f"Minimum angle: {min_angle:.2f} deg\n"
+                f"Maximum angle: {max_angle:.2f} deg\n\n"
+                f"Keep the full sine wave between -45 and 45 degrees."
+            )
+            return
+
+        self.send_command(f"SINE {offset} {amplitude} {frequency}")
+
     def start_trial(self):
         self.current_trial_id += 1
         self.send_command("START")
@@ -353,6 +479,7 @@ class PIDMonitorGUI:
     # Process incoming Arduino line
     # ======================================================
     def process_serial_line(self, line):
+        # print(f"Received line: {line}")  # Debug print for all incoming lines
         # Arduino text messages
         if line.startswith("READY"):
             self.log_message(line)
@@ -397,9 +524,14 @@ class PIDMonitorGUI:
             self.log_message(line)
             return
         
-        if line.startswith("ENCODER_ZEROED"):
-            self.status_var.set("Encoder zeroed")
-            self.log_message("Encoder zeroed / homed")
+        if line.startswith("THETA_MIN_CAPTURED"):
+            self.status_var.set("Theta min captured")
+            self.log_message(line)
+            return
+        
+        if line.startswith("THETA_MAX_CAPTURED"):
+            self.status_var.set("Theta max captured")
+            self.log_message(line)
             return
 
         if line.startswith("time_ms"):
@@ -416,11 +548,11 @@ class PIDMonitorGUI:
         try:
             t_ms = float(parts[0])
             theta = float(parts[1])
-            theta_dot = float(parts[2])
-            control_output = float(parts[3])
-            kp = float(parts[4])
-            ki = float(parts[5])
-            kd = float(parts[6])
+            control_output = float(parts[2])
+            kp = float(parts[3])
+            ki = float(parts[4])
+            kd = float(parts[5])
+            theta_dot = float(parts[6])
 
             t_sec = t_ms / 1000.0
 
