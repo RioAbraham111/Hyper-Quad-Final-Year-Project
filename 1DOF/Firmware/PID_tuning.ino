@@ -56,11 +56,27 @@ const int ENCODER_DIRECTION = 1;
 // Encoder median filter
 // =======================================================
 
-const int MEDIAN_FILTER_SIZE = 5;
+const int MEDIAN_FILTER_SIZE = 3;
 
 long encoderHistory[MEDIAN_FILTER_SIZE] = {0};
 int encoderHistoryIndex = 0;
 bool encoderHistoryFilled = false;
+
+// =======================================================
+// Theta and theta-dot filtering
+// =======================================================
+
+float thetaFiltered = 0.0;
+float thetaDotFiltered = 0.0;
+float previousThetaFiltered = 0.0;
+
+bool filterInitialized = false;
+
+// Filter tuning
+// Smaller = smoother but slower response
+// Larger = faster but noisier
+float thetaAlpha = 0.25;
+float thetaDotAlpha = 0.10;
 
 
 // =======================================================
@@ -112,7 +128,7 @@ bool trialRunning = false;
 unsigned long trialStartTime = 0;
 unsigned long lastControlTime = 0;
 
-const unsigned long SAMPLE_TIME_MS = 10;   // 100 Hz
+const unsigned long SAMPLE_TIME_MS = 5;   // 100 Hz
 
 
 // =======================================================
@@ -125,8 +141,12 @@ void idleMode();
 void stopTrial();
 
 float readTheta();
-float computePID(float theta, float thetaReference, float dt);
-float mapFloat();
+float computePID(float theta, float thetaReference, float thetaDotMeasured, float dt);
+float mapFloat(float x,
+               float in_min,
+               float in_max,
+               float out_min,
+               float out_max);
 void applyControl(float controlOutput);
 void setMotorPower(int power1, int power2);
 void idleMotors();
@@ -140,6 +160,10 @@ long getMedian(long arr[], int size);
 // =======================================================
 // Setup
 // =======================================================
+
+float lowPassFilter(float previousFilteredValue, float newValue, float alpha) {
+  return alpha * newValue + (1.0 - alpha) * previousFilteredValue;
+}
 
 void setup() {
   Serial.begin(115200);
@@ -199,18 +223,37 @@ void loop() {
       }
 
       float rawPosition = readTheta();
-      float theta = mapFloat(rawPosition,
-                            counterAtThetaMin,
-                            counterAtThetaMax,
-                            THETA_MIN_DEG,
-                            THETA_MAX_DEG);
 
-      // theta derivative [deg/s]
-      thetaDot = (theta - previousTheta) / dt;
-      previousTheta = theta;
+      float thetaRaw = mapFloat(rawPosition,
+                                counterAtThetaMin,
+                                counterAtThetaMax,
+                                THETA_MIN_DEG,
+                                THETA_MAX_DEG);
+
+      // Initialize filters cleanly on first sample
+      if (!filterInitialized) {
+        thetaFiltered = thetaRaw;
+        previousThetaFiltered = thetaRaw;
+        thetaDotFiltered = 0.0;
+        filterInitialized = true;
+      }
+
+      // Low-pass filter theta
+      thetaFiltered = lowPassFilter(thetaFiltered, thetaRaw, thetaAlpha);
+
+      // Calculate theta-dot from filtered theta
+      float thetaDotRaw = (thetaFiltered - previousThetaFiltered) / dt;
+
+      // Low-pass filter theta-dot
+      thetaDotFiltered = lowPassFilter(thetaDotFiltered, thetaDotRaw, thetaDotAlpha);
+
+      // Store for next derivative calculation
+      previousThetaFiltered = thetaFiltered;
 
       float thetaReference = getReferenceAngle();
-      float controlOutput = computePID(theta, thetaReference, dt);
+
+      // Use filtered theta and filtered theta-dot for PID
+      float controlOutput = computePID(thetaFiltered, thetaReference, thetaDotFiltered, dt);
 
       applyControl(controlOutput);
 
@@ -219,7 +262,7 @@ void loop() {
       // Send data to Python
       Serial.print(trialTime);
       Serial.print(",");
-      Serial.print(theta, 6);
+      Serial.print(thetaFiltered, 6);
       Serial.print(",");
       Serial.print(controlOutput, 6);
       Serial.print(",");
@@ -229,7 +272,7 @@ void loop() {
       Serial.print(",");
       Serial.print(Kd, 6);
       Serial.print(",");
-      Serial.println(thetaDot,6);
+      Serial.println(thetaDotFiltered,6);
     }
   }
 }
@@ -275,6 +318,7 @@ void handleSerialCommand(String cmd) {
   }
 
   else if (upperCmd.startsWith("ANGLE")) {
+
     int space = cmd.indexOf(' ');
 
     if (space < 0) {
@@ -282,14 +326,23 @@ void handleSerialCommand(String cmd) {
       return;
     }
 
-    float newSetpoint = cmd.substring(space + 1).toFloat();
-    setpoint = newSetpoint;
+    float newAngle = cmd.substring(space + 1).toFloat();
 
-    integral = 0.0;   // optional: prevents windup when target changes
+    if (newAngle < -45.0 || newAngle > 45.0) {
+      Serial.println("ERROR: Angle must be between -45 and 45 deg");
+      return;
+    }
+
+    // Disable sine mode
+    referenceMode = CONSTANT_REFERENCE;
+
+    desiredAngle = newAngle;
+
+    integral = 0.0;
     prevError = 0.0;
 
-    Serial.print("SETPOINT_UPDATED,");
-    Serial.println(setpoint, 6);
+    Serial.print("ANGLE_UPDATED,");
+    Serial.println(desiredAngle, 6);
   }
   
   else if (upperCmd.startsWith("SINE")) {
@@ -402,6 +455,12 @@ void handleSerialCommand(String cmd) {
       Serial.println("CALIBRATION_COMPLETE");
 
       waitingForMaxCalibration = false;
+      filterInitialized = false;
+      thetaFiltered = 0.0;
+      thetaDotFiltered = 0.0;
+      previousThetaFiltered = 0.0;
+      previousTheta = 0.0;
+      thetaDot = 0.0;
     }
   }
 
@@ -420,6 +479,13 @@ void startTrial() {
     Serial.println("ERROR: Trial already running");
     return;
   }
+
+  filterInitialized = false;
+  thetaFiltered = 0.0;
+  thetaDotFiltered = 0.0;
+  previousThetaFiltered = 0.0;
+  previousTheta = 0.0;
+  thetaDot = 0.0;
 
   integral = 0.0;
   prevError = 0.0;
@@ -555,13 +621,16 @@ float getReferenceAngle() {
 // PID controller
 // =======================================================
 
-float computePID(float theta, float thetaReference, float dt) {
+float computePID(float theta, float thetaReference, float thetaDotMeasured, float dt) {
   error = thetaReference - theta;
 
   integral += error * dt;
   integral = constrain(integral, INTEGRAL_MIN, INTEGRAL_MAX);
 
-  derivative = (error - prevError) / dt;
+  // Use measured angular velocity instead of differentiating noisy error
+  // error = reference - theta
+  // d(error)/dt ≈ -thetaDotMeasured
+  derivative = -thetaDotMeasured;
 
   float output = Kp * error + Ki * integral + Kd * derivative;
 
