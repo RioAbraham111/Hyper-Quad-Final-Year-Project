@@ -11,8 +11,8 @@ const int MOTOR1_PIN = 5;
 const int MOTOR2_PIN = 7;
 
 // Motor power is mapped from 0 to 100 percent
-const int MOTOR_POWER_MIN = 0;
-const int MOTOR_POWER_MAX = 100;
+const int MOTOR_POWER_MIN = 7;
+const int MOTOR_POWER_MAX = 70;
 
 // ESC microsecond range
 const int ESC_MIN_US = 1000;
@@ -20,7 +20,7 @@ const int ESC_MAX_US = 2000;
 
 // Base motor power
 // Both motors will run at this power when PID output is zero
-int basePower = 15;
+int basePower = 12;
 
 // Limit how much the PID can change motor power
 int maxDeltaPower = 30;
@@ -34,6 +34,7 @@ const int ENCODER_PIN_A = 2;
 const int ENCODER_PIN_B = 3;
 
 volatile long counter = 0;
+volatile uint8_t lastEncoded = 0;
 
 // Your physical seesaw angle range
 const float THETA_MAX_DEG = 51.0;
@@ -42,10 +43,40 @@ const float THETA_MIN_DEG = -51.0;
 // IMPORTANT:
 // Change this value after measuring your encoder count difference
 // from +51 deg to -51 deg.
-const float COUNTS_FULL_RANGE = 220.0;
+long counterAtThetaMin = 0;
+long counterAtThetaMax = -220;
+
+bool waitingForMaxCalibration = false;
+
 
 // If the angle direction is wrong, change this to -1
 const int ENCODER_DIRECTION = 1;
+
+// =======================================================
+// Encoder median filter
+// =======================================================
+
+const int MEDIAN_FILTER_SIZE = 3;
+
+long encoderHistory[MEDIAN_FILTER_SIZE] = {0};
+int encoderHistoryIndex = 0;
+bool encoderHistoryFilled = false;
+
+// =======================================================
+// Theta and theta-dot filtering
+// =======================================================
+
+float thetaFiltered = 0.0;
+float thetaDotFiltered = 0.0;
+float previousThetaFiltered = 0.0;
+
+bool filterInitialized = false;
+
+// Filter tuning
+// Smaller = smoother but slower response
+// Larger = faster but noisier
+float thetaAlpha = 0.25;
+float thetaDotAlpha = 0.10;
 
 
 // =======================================================
@@ -66,6 +97,27 @@ float derivative = 0.0;
 const float INTEGRAL_MIN = -100.0;
 const float INTEGRAL_MAX = 100.0;
 
+float thetaDot = 0.0;
+float previousTheta = 0.0;
+
+// =======================================================
+// Reference / setpoint mode
+// =======================================================
+
+enum ReferenceMode {
+  CONSTANT_REFERENCE,
+  SINE_REFERENCE
+};
+
+ReferenceMode referenceMode = CONSTANT_REFERENCE;
+
+float desiredAngle = 0.0;
+
+float sineOffset = 0.0;
+float sineAmplitude = 10.0;
+float sineFrequencyHz = 0.1;
+
+unsigned long sineStartTime = 0;
 
 // =======================================================
 // Control loop setup
@@ -76,7 +128,7 @@ bool trialRunning = false;
 unsigned long trialStartTime = 0;
 unsigned long lastControlTime = 0;
 
-const unsigned long SAMPLE_TIME_MS = 10;   // 100 Hz
+const unsigned long SAMPLE_TIME_MS = 5;   // 100 Hz
 
 
 // =======================================================
@@ -85,21 +137,33 @@ const unsigned long SAMPLE_TIME_MS = 10;   // 100 Hz
 
 void handleSerialCommand(String cmd);
 void startTrial();
+void idleMode();
 void stopTrial();
 
 float readTheta();
-float computePID(float theta, float dt);
+float computePID(float theta, float thetaReference, float thetaDotMeasured, float dt);
+float mapFloat(float x,
+               float in_min,
+               float in_max,
+               float out_min,
+               float out_max);
 void applyControl(float controlOutput);
 void setMotorPower(int power1, int power2);
+void idleMotors();
 void stopMotors();
 
 void ai0();
 void ai1();
 
+long getMedian(long arr[], int size);
 
 // =======================================================
 // Setup
 // =======================================================
+
+float lowPassFilter(float previousFilteredValue, float newValue, float alpha) {
+  return alpha * newValue + (1.0 - alpha) * previousFilteredValue;
+}
 
 void setup() {
   Serial.begin(115200);
@@ -110,12 +174,15 @@ void setup() {
 
   stopMotors();
 
-  // Encoder setup
   pinMode(ENCODER_PIN_A, INPUT_PULLUP);
   pinMode(ENCODER_PIN_B, INPUT_PULLUP);
 
-  attachInterrupt(digitalPinToInterrupt(ENCODER_PIN_A), ai0, RISING);
-  attachInterrupt(digitalPinToInterrupt(ENCODER_PIN_B), ai1, RISING);
+  uint8_t MSB = digitalRead(ENCODER_PIN_A);
+  uint8_t LSB = digitalRead(ENCODER_PIN_B);
+  lastEncoded = (MSB << 1) | LSB;
+
+  attachInterrupt(digitalPinToInterrupt(ENCODER_PIN_A), updateEncoder, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENCODER_PIN_B), updateEncoder, CHANGE);
 
   lastControlTime = millis();
 
@@ -124,6 +191,7 @@ void setup() {
   Serial.println("SET Kp Ki Kd");
   Serial.println("START");
   Serial.println("STOP");
+  Serial.println("IDLE");
   Serial.println("STATUS");
   Serial.println("Output format:");
   Serial.println("time_ms,theta,control_output,kp,ki,kd");
@@ -154,8 +222,38 @@ void loop() {
         dt = 0.001;
       }
 
-      float theta = readTheta();
-      float controlOutput = computePID(theta, dt);
+      float rawPosition = readTheta();
+
+      float thetaRaw = mapFloat(rawPosition,
+                                counterAtThetaMin,
+                                counterAtThetaMax,
+                                THETA_MIN_DEG,
+                                THETA_MAX_DEG);
+
+      // Initialize filters cleanly on first sample
+      if (!filterInitialized) {
+        thetaFiltered = thetaRaw;
+        previousThetaFiltered = thetaRaw;
+        thetaDotFiltered = 0.0;
+        filterInitialized = true;
+      }
+
+      // Low-pass filter theta
+      thetaFiltered = lowPassFilter(thetaFiltered, thetaRaw, thetaAlpha);
+
+      // Calculate theta-dot from filtered theta
+      float thetaDotRaw = (thetaFiltered - previousThetaFiltered) / dt;
+
+      // Low-pass filter theta-dot
+      thetaDotFiltered = lowPassFilter(thetaDotFiltered, thetaDotRaw, thetaDotAlpha);
+
+      // Store for next derivative calculation
+      previousThetaFiltered = thetaFiltered;
+
+      float thetaReference = getReferenceAngle();
+
+      // Use filtered theta and filtered theta-dot for PID
+      float controlOutput = computePID(thetaFiltered, thetaReference, thetaDotFiltered, dt);
 
       applyControl(controlOutput);
 
@@ -164,7 +262,7 @@ void loop() {
       // Send data to Python
       Serial.print(trialTime);
       Serial.print(",");
-      Serial.print(theta, 6);
+      Serial.print(thetaFiltered, 6);
       Serial.print(",");
       Serial.print(controlOutput, 6);
       Serial.print(",");
@@ -172,7 +270,9 @@ void loop() {
       Serial.print(",");
       Serial.print(Ki, 6);
       Serial.print(",");
-      Serial.println(Kd, 6);
+      Serial.print(Kd, 6);
+      Serial.print(",");
+      Serial.println(thetaDotFiltered,6);
     }
   }
 }
@@ -217,6 +317,85 @@ void handleSerialCommand(String cmd) {
     Serial.println(Kd, 6);
   }
 
+  else if (upperCmd.startsWith("ANGLE")) {
+
+    int space = cmd.indexOf(' ');
+
+    if (space < 0) {
+      Serial.println("ERROR: Use ANGLE <setpoint>");
+      return;
+    }
+
+    float newAngle = cmd.substring(space + 1).toFloat();
+
+    if (newAngle < -45.0 || newAngle > 45.0) {
+      Serial.println("ERROR: Angle must be between -45 and 45 deg");
+      return;
+    }
+
+    // Disable sine mode
+    referenceMode = CONSTANT_REFERENCE;
+
+    desiredAngle = newAngle;
+
+    integral = 0.0;
+    prevError = 0.0;
+
+    Serial.print("ANGLE_UPDATED,");
+    Serial.println(desiredAngle, 6);
+  }
+  
+  else if (upperCmd.startsWith("SINE")) {
+    int firstSpace = cmd.indexOf(' ');
+    int secondSpace = cmd.indexOf(' ', firstSpace + 1);
+    int thirdSpace = cmd.indexOf(' ', secondSpace + 1);
+
+    if (firstSpace < 0 || secondSpace < 0 || thirdSpace < 0) {
+      Serial.println("ERROR: Use SINE offset amplitude frequencyHz");
+      return;
+    }
+
+    float newOffset = cmd.substring(firstSpace + 1, secondSpace).toFloat();
+    float newAmplitude = cmd.substring(secondSpace + 1, thirdSpace).toFloat();
+    float newFrequency = cmd.substring(thirdSpace + 1).toFloat();
+
+    if (newAmplitude < 0.0) {
+      Serial.println("ERROR: Sine amplitude must be positive");
+      return;
+    }
+
+    if (newFrequency <= 0.0) {
+      Serial.println("ERROR: Sine frequency must be greater than 0");
+      return;
+    }
+
+    float minAngle = newOffset - newAmplitude;
+    float maxAngle = newOffset + newAmplitude;
+
+    if (minAngle < -45.0 || maxAngle > 45.0) {
+      Serial.println("ERROR: Sine reference must stay within -45 to 45 degrees");
+      return;
+    }
+
+    sineOffset = newOffset;
+    sineAmplitude = newAmplitude;
+    sineFrequencyHz = newFrequency;
+    sineStartTime = millis();
+
+    referenceMode = SINE_REFERENCE;
+
+    integral = 0.0;
+    prevError = 0.0;
+
+    Serial.print("SINE_UPDATED,");
+    Serial.print(sineOffset, 6);
+    Serial.print(",");
+    Serial.print(sineAmplitude, 6);
+    Serial.print(",");
+    Serial.println(sineFrequencyHz, 6);
+  }
+
+
   else if (upperCmd == "START") {
     startTrial();
   }
@@ -225,10 +404,15 @@ void handleSerialCommand(String cmd) {
     stopTrial();
   }
 
+  else if (upperCmd == "IDLE") {
+    idleMode();
+  }
+
   else if (upperCmd == "STATUS") {
     Serial.print("STATUS,");
     Serial.print(trialRunning ? "RUNNING" : "STOPPED");
     Serial.print(",");
+    Serial.print("theta ref="),
     Serial.print("theta=");
     Serial.print(readTheta(), 6);
     Serial.print(",");
@@ -240,6 +424,44 @@ void handleSerialCommand(String cmd) {
     Serial.print(",");
     Serial.print("Kd=");
     Serial.println(Kd, 6);
+  }
+
+  else if (upperCmd == "ZERO") {
+
+    long countSnapshot;
+
+    noInterrupts();
+    countSnapshot = counter;
+    interrupts();
+
+    if (!waitingForMaxCalibration) {
+
+      counterAtThetaMin = countSnapshot;
+
+      Serial.print("THETA_MIN_CAPTURED,");
+      Serial.print(counterAtThetaMin);
+
+      Serial.println("MOVE_TO_NEXT_POSITION");
+
+      waitingForMaxCalibration = true;
+    }
+    else {
+
+      counterAtThetaMax = countSnapshot;
+
+      Serial.print("THETA_MAX_CAPTURED,");
+      Serial.print(counterAtThetaMax);
+
+      Serial.println("CALIBRATION_COMPLETE");
+
+      waitingForMaxCalibration = false;
+      filterInitialized = false;
+      thetaFiltered = 0.0;
+      thetaDotFiltered = 0.0;
+      previousThetaFiltered = 0.0;
+      previousTheta = 0.0;
+      thetaDot = 0.0;
+    }
   }
 
   else {
@@ -258,6 +480,13 @@ void startTrial() {
     return;
   }
 
+  filterInitialized = false;
+  thetaFiltered = 0.0;
+  thetaDotFiltered = 0.0;
+  previousThetaFiltered = 0.0;
+  previousTheta = 0.0;
+  thetaDot = 0.0;
+
   integral = 0.0;
   prevError = 0.0;
 
@@ -270,6 +499,17 @@ void startTrial() {
   Serial.println("time_ms,theta,control_output,kp,ki,kd");
 }
 
+// =======================================================
+// Idle mode
+// =======================================================
+
+void idleMode() {
+  trialRunning = false;
+
+  idleMotors();
+
+  Serial.println("IDLE_MODE");
+}
 
 // =======================================================
 // Stop trial
@@ -298,41 +538,99 @@ void stopTrial() {
 // =======================================================
 
 float readTheta() {
+
   long countSnapshot;
 
   noInterrupts();
   countSnapshot = counter;
   interrupts();
 
-  float correctedCount = ENCODER_DIRECTION * (float)countSnapshot;
+  encoderHistory[encoderHistoryIndex] = countSnapshot;
 
-  // At Arduino startup:
-  // counter = 0 means theta = +51 deg
-  //
-  // After moving through full range:
-  // counter = COUNTS_FULL_RANGE means theta = -51 deg
+  encoderHistoryIndex++;
 
-  float theta = THETA_MAX_DEG -
-                (correctedCount / COUNTS_FULL_RANGE) *
-                (THETA_MAX_DEG - THETA_MIN_DEG);
+  if (encoderHistoryIndex >= MEDIAN_FILTER_SIZE) {
+    encoderHistoryIndex = 0;
+    encoderHistoryFilled = true;
+  }
 
-  theta = constrain(theta, THETA_MIN_DEG, THETA_MAX_DEG);
+  if (!encoderHistoryFilled) {
+    return countSnapshot;
+  }
 
-  return theta;
+  long temp[MEDIAN_FILTER_SIZE];
+
+  for (int i = 0; i < MEDIAN_FILTER_SIZE; i++) {
+    temp[i] = encoderHistory[i];
+  }
+
+  return getMedian(temp, MEDIAN_FILTER_SIZE);
 }
 
+float mapFloat(float x,
+               float in_min,
+               float in_max,
+               float out_min,
+               float out_max) {
+
+  return (x - in_min) *
+         (out_max - out_min) /
+         (in_max - in_min) +
+         out_min;
+}
+
+long getMedian(long arr[], int size) {
+
+  for (int i = 0; i < size - 1; i++) {
+
+    for (int j = i + 1; j < size; j++) {
+
+      if (arr[j] < arr[i]) {
+
+        long temp = arr[i];
+        arr[i] = arr[j];
+        arr[j] = temp;
+      }
+    }
+  }
+
+  return arr[size / 2];
+}
+
+float getReferenceAngle() {
+  if (referenceMode == CONSTANT_REFERENCE) {
+    return desiredAngle;
+  }
+
+  else if (referenceMode == SINE_REFERENCE) {
+    float t = (millis() - sineStartTime) / 1000.0;
+
+    float reference =
+      sineOffset +
+      sineAmplitude * sin(2.0 * PI * sineFrequencyHz * t);
+
+    reference = constrain(reference, -45.0, 45.0);
+
+    return reference;
+  }
+
+  return desiredAngle;
+}
 
 // =======================================================
 // PID controller
 // =======================================================
 
-float computePID(float theta, float dt) {
-  error = setpoint - theta;
+float computePID(float theta, float thetaReference, float thetaDotMeasured, float dt) {
+  error = thetaReference - theta;
 
   integral += error * dt;
   integral = constrain(integral, INTEGRAL_MIN, INTEGRAL_MAX);
 
-  derivative = (error - prevError) / dt;
+  // Use measured angular velocity instead of differentiating noisy error
+  // error = reference - theta
+  // d(error)/dt ≈ -thetaDotMeasured
+  derivative = -thetaDotMeasured;
 
   float output = Kp * error + Ki * integral + Kd * derivative;
 
@@ -356,6 +654,7 @@ void applyControl(float controlOutput) {
 
   int power1 = basePower + deltaPower;
   int power2 = basePower - deltaPower;
+
 
   power1 = constrain(power1, MOTOR_POWER_MIN, MOTOR_POWER_MAX);
   power2 = constrain(power2, MOTOR_POWER_MIN, MOTOR_POWER_MAX);
@@ -384,28 +683,52 @@ void setMotorPower(int power1, int power2) {
 // Stop motors
 // =======================================================
 
-void stopMotors() {
-  motor1.writeMicroseconds(ESC_MIN_US);
-  motor2.writeMicroseconds(ESC_MIN_US);
+void idleMotors() {
+  int pwm1 = map(7, 0, 100, ESC_MIN_US, ESC_MAX_US);
+  int pwm2 = map(7, 0, 100, ESC_MIN_US, ESC_MAX_US);
+  motor1.writeMicroseconds(pwm1);
+  motor2.writeMicroseconds(pwm2);
 }
 
+
+void stopMotors(){
+  motor1.writeMicroseconds(1000);
+  motor2.writeMicroseconds(1000);
+}
 
 // =======================================================
 // Encoder interrupt functions
 // =======================================================
 
-void ai0() {
-  if (digitalRead(ENCODER_PIN_B) == LOW) {
-    counter++;
-  } else {
-    counter--;
-  }
-}
+void updateEncoder() {
+  uint8_t MSB = digitalRead(ENCODER_PIN_A);
+  uint8_t LSB = digitalRead(ENCODER_PIN_B);
 
-void ai1() {
-  if (digitalRead(ENCODER_PIN_A) == LOW) {
-    counter--;
-  } else {
+  uint8_t encoded = (MSB << 1) | LSB;
+  uint8_t sum = (lastEncoded << 2) | encoded;
+
+  // Valid clockwise transitions
+  if (
+    sum == 0b1101 ||
+    sum == 0b0100 ||
+    sum == 0b0010 ||
+    sum == 0b1011
+  ) {
     counter++;
   }
+
+  // Valid counter-clockwise transitions
+  else if (
+    sum == 0b1110 ||
+    sum == 0b0111 ||
+    sum == 0b0001 ||
+    sum == 0b1000
+  ) {
+    counter--;
+  }
+
+  // Invalid transitions are ignored.
+  // This helps reject noise/glitches.
+
+  lastEncoded = encoded;
 }
