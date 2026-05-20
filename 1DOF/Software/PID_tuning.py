@@ -54,6 +54,8 @@ class PIDMonitorGUI:
         self.latest_pid_var = tk.StringVar(value="Kp: ---   Ki: ---   Kd: ---")
         self.latest_theta_dot_var = tk.StringVar(value="Theta dot: ---")
 
+        self.reference_filename_label = "angle_0deg"
+
         self.create_widgets()
         self.refresh_ports()
 
@@ -389,6 +391,8 @@ class PIDMonitorGUI:
                 "Desired angle must be between -45 and 45 degrees."
             )
             return
+        
+        self.reference_filename_label = f"angle_{angle:g}deg"
 
         self.send_command(f"ANGLE {angle}")
 
@@ -431,6 +435,8 @@ class PIDMonitorGUI:
                 f"Keep the full sine wave between -45 and 45 degrees."
             )
             return
+        
+        self.reference_filename_label = f"sine_offset_{offset:g}_amp_{amplitude:g}_freq_{frequency:g}Hz"
 
         self.send_command(f"SINE {offset} {amplitude} {frequency}")
 
@@ -626,7 +632,8 @@ class PIDMonitorGUI:
             messagebox.showinfo("No data", "No data to save yet.")
             return
 
-        default_filename = f"pid_trial_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_filename = f"pid_trial_{self.reference_filename_label}_{timestamp}.csv"
 
         filename = filedialog.asksaveasfilename(
             defaultextension=".csv",
