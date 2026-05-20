@@ -22,7 +22,7 @@ class PIDMonitorGUI:
         self.connected = False
 
         # Data storage
-        self.max_display_points = 1000
+        self.max_display_points = 2000
         self.time_data = deque(maxlen=self.max_display_points)
         self.theta_data = deque(maxlen=self.max_display_points)
         self.control_data = deque(maxlen=self.max_display_points)
@@ -479,7 +479,7 @@ class PIDMonitorGUI:
     # Process incoming Arduino line
     # ======================================================
     def process_serial_line(self, line):
-        print(f"Received line: {line}")  # Debug print for all incoming lines
+        # print(f"Received line: {line}")  # Debug print for all incoming lines
         # Arduino text messages
         if line.startswith("READY"):
             self.log_message(line)
